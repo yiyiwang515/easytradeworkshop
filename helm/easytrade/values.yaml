@@ -110,17 +110,30 @@ credit-card-order-service:
     FEATURE_FLAG_SERVICE_PROTOCOL: http
     FEATURE_FLAG_SERVICE_BASE_URL: "{{ .Release.Name }}-feature-flag-service"
     FEATURE_FLAG_SERVICE_PORT: "8080"
+    # Bitcoin payment gateway. Leave empty to run the gateway client in local
+    # simulation mode (dev/compose). Set to the real gateway base URL in prod.
+    BITCOIN_GATEWAY_URL: ""
   envFromSecret:
     MSSQL_CONNECTIONSTRING:
       name: "{{ .Release.Name }}-connection-strings"
       key: "JAVA_CONNECTION_STRING"
+  # Bluebox baseline: status/latest is 97.2% of a 9.3k req/24h load and the pod is
+  # capped at 500m (half a core). At 100x this endpoint alone needs ~2.2 cores, so
+  # scale horizontally via the HPA below and give a single replica more burst room.
   resources:
     requests:
-      cpu: 20m
+      cpu: 250m
       memory: 650Mi
     limits:
-      cpu: 500m
+      cpu: "1"
       memory: 650Mi
+  # Horizontal scaling for 100x. The service is stateless (state lives in mssql),
+  # so replicas scale linearly. Uses the app subchart's HorizontalPodAutoscaler.
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 30
+    targetCPUUtilizationPercentage: 60
   service:
     enabled: true
     port: 8080
@@ -170,6 +183,9 @@ feature-flag-service:
     FEATURE_FLAG_SERVICE_PROTOCOL: http
     FEATURE_FLAG_SERVICE_BASE_URL: "{{ .Release.Name }}-feature-flag-service"
     FEATURE_FLAG_SERVICE_PORT: "8080"
+    # Feature toggle for the bitcoin payment endpoints (ships dark, default off).
+    # Flip to "true" per-environment once the 100x prerequisites are met.
+    ENABLE_BITCOIN_PAYMENTS: "false"
   resources:
     requests:
       cpu: 30m
@@ -177,6 +193,14 @@ feature-flag-service:
     limits:
       cpu: 200m
       memory: 600Mi
+  # Bluebox baseline: this is the #1 bottleneck at 100x (184k calls/24h today,
+  # ~213/sec projected). Combine this HPA with client-side flag caching in the
+  # calling services (see docs/bitcoin-payment-architecture.md §2.1).
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 40
+    targetCPUUtilizationPercentage: 60
   service:
     enabled: true
     port: 8080
